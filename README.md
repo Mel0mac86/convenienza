@@ -68,7 +68,32 @@ Convenienza/
 La chiave è salvata **solo nel Keychain del dispositivo**: non finisce mai nel
 repository né in UserDefaults.
 
-## Requisiti e build
+## 📱 Versione web (senza Mac: si installa da Safari)
+
+In `docs/` c'è una versione **web app (PWA)** completa di Convenienza che gira
+interamente nel browser dell'iPhone e si installa dalla condivisione di Safari
+(**Aggiungi alla schermata Home**). Non servono Mac, Xcode o App Store.
+
+- Posizione via browser (con consenso), supermercati fisici reali da
+  **OpenStreetMap** (Overpass API), città via Nominatim.
+- Offerte reali via **Groq compound** (ricerca web), stessa logica dell'app
+  nativa: cache settimanale, lotti piccoli, gestione del rate limit.
+- Tutti i dati (lista prodotti, offerte, storico, chiave API) restano nel
+  browser del dispositivo.
+
+**Uso immediato** (subito, senza configurare nulla):
+apri in Safari `https://raw.githack.com/Mel0mac86/convenienza/claude/ios-grocery-tracker-jm65vq/docs/index.html`
+
+**URL stabile con GitHub Pages** (consigliato): Settings → Pages →
+*Deploy from a branch* → scegli il branch e la cartella `/docs` → Save.
+L'app sarà su `https://mel0mac86.github.io/convenienza/`.
+
+Limite della versione web: iOS non consente notifiche push web senza un server
+di push, quindi il controllo offerte avviene all'apertura dell'app (e ogni 30
+minuti mentre è aperta), con avvisi in-app. Le notifiche push vere restano una
+funzionalità dell'app nativa.
+
+## Requisiti e build (app nativa)
 
 - Xcode 15+ (iOS 17 SDK)
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) per generare il progetto
