@@ -4,16 +4,61 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(AppState.self) private var app
     @State private var showLogoutConfirm = false
+    @State private var groqKeyInput = ""
+    @State private var keySaved = false
 
     var body: some View {
         NavigationStack {
             Form {
                 accountSection
+                dataSourceSection
                 radiusSection
                 permissionsSection
                 infoSection
             }
             .navigationTitle("Profilo")
+            .onAppear {
+                groqKeyInput = app.storedGroqKey
+            }
+        }
+    }
+
+    private var dataSourceSection: some View {
+        Section {
+            LabeledContent("Stato") {
+                Text(app.realDataConfigured ? "Prezzi reali attivi" : "Non configurata")
+                    .font(.caption.weight(.medium))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(app.realDataConfigured ? Color.green.opacity(0.15) : Color.orange.opacity(0.15))
+                    .foregroundStyle(app.realDataConfigured ? .green : .orange)
+                    .clipShape(Capsule())
+            }
+            SecureField("Chiave API Groq (gsk_...)", text: $groqKeyInput)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            Button(keySaved ? "Salvata ✓" : "Salva chiave") {
+                app.updateGroqKey(groqKeyInput)
+                keySaved = true
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    keySaved = false
+                }
+            }
+            .disabled(groqKeyInput.trimmingCharacters(in: .whitespaces) == app.storedGroqKey)
+            if !app.realDataConfigured {
+                Toggle("Modalità demo (dati di esempio)", isOn: Binding(
+                    get: { UserDefaults.standard.bool(forKey: OfferProviderFactory.demoModeKey) },
+                    set: { enabled in
+                        UserDefaults.standard.set(enabled, forKey: OfferProviderFactory.demoModeKey)
+                        Task { await app.refreshEverything() }
+                    }
+                ))
+            }
+        } header: {
+            Text("Sorgente prezzi reali")
+        } footer: {
+            Text("Le offerte vengono cercate sul web nei volantini reali delle catene tramite Groq (modelli con ricerca web integrata). La chiave è salvata solo nel Keychain di questo dispositivo. Ottienila gratis su console.groq.com.")
         }
     }
 
@@ -88,8 +133,8 @@ struct SettingsView: View {
 
     private var infoSection: some View {
         Section {
-            LabeledContent("Versione", value: "1.0.0")
-            LabeledContent("Fonte offerte", value: "Volantini GDO (simulati)")
+            LabeledContent("Versione", value: "1.1.0")
+            LabeledContent("Fonte offerte", value: app.realDataConfigured ? "Volantini GDO via Groq" : "Nessuna")
         } footer: {
             Text("Convenienza confronta esclusivamente i prezzi dei supermercati fisici presenti sul territorio. Nessun e-commerce, marketplace o negozio online.")
         }

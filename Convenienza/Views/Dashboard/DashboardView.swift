@@ -23,6 +23,12 @@ struct DashboardView: View {
                 LazyVStack(spacing: 24, pinnedViews: []) {
                     locationBanner
 
+                    if !app.realDataConfigured {
+                        ContentCard(icon: "key.fill", tint: .orange,
+                                    title: "Configura i prezzi reali",
+                                    message: "Aggiungi la tua chiave API Groq nella scheda Profilo: le offerte verranno cercate nei volantini reali dei supermercati della tua zona.")
+                    }
+
                     if products.isEmpty {
                         emptyState
                     } else {

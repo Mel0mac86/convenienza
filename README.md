@@ -48,14 +48,25 @@ Convenienza/
 
 - **`MonitoringEngine`** è il cuore dell'app: prodotti monitorati → supermercati in
   zona → offerte per catena → nuovi record + storico prezzi → notifiche.
-- **`OfferProvider`** è il protocollo che astrae la sorgente dei prezzi. Oggi è
-  implementato da `SimulatedOfferProvider`, un provider deterministico che genera
-  offerte realistiche stabili per l'intera settimana promozionale (come i volantini
-  reali). Per andare in produzione basta implementare il protocollo con una vera API
-  di volantini GDO (es. ShopFully/DoveConviene o i feed delle singole catene) senza
-  toccare il resto dell'app.
+- **`OfferProvider`** è il protocollo che astrae la sorgente dei prezzi.
+  - **`GroqOfferProvider`** (produzione) — usa i modelli **Groq `groq/compound`**
+    con ricerca web integrata per trovare le offerte **realmente pubblicate** nei
+    volantini della GDO italiana (siti delle catene e aggregatori come PromoQui,
+    DoveConviene, VolantinoFacile) e le restituisce in JSON strutturato e validato.
+    Nessun prezzo inventato: se non c'è riscontro online, il prodotto non compare.
+    Include cache per settimana promozionale (TTL 6 h), richieste a piccoli lotti e
+    gestione automatica del rate limit del piano gratuito (HTTP 429 + retry).
+  - **`SimulatedOfferProvider`** — solo modalità demo, disattivata di default.
 - **`SupermarketService`** usa `MKLocalSearch` con filtro `foodMarket`: per requisito
   vengono considerati **solo punti vendita fisici** sul territorio.
+
+### Configurazione dei prezzi reali
+
+1. Crea una chiave API gratuita su [console.groq.com](https://console.groq.com).
+2. Nell'app: **Profilo → Sorgente prezzi reali** → incolla la chiave → *Salva*.
+
+La chiave è salvata **solo nel Keychain del dispositivo**: non finisce mai nel
+repository né in UserDefaults.
 
 ## Requisiti e build
 

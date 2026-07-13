@@ -7,10 +7,12 @@ import SwiftData
 /// trova una nuova promozione. Viene eseguito in foreground (all'apertura, al cambio
 /// posizione, al pull-to-refresh) e in background tramite BGTaskScheduler.
 final class MonitoringEngine {
-    private let provider: OfferProvider
+    /// Provider fisso per i test; se nil, viene risolto a ogni ciclo in base
+    /// alla configurazione corrente (chiave Groq presente, modalità demo, ...).
+    private let fixedProvider: OfferProvider?
 
-    init(provider: OfferProvider = SimulatedOfferProvider()) {
-        self.provider = provider
+    init(provider: OfferProvider? = nil) {
+        self.fixedProvider = provider
     }
 
     /// Esegue un ciclo completo di controllo. Ritorna il numero di nuove offerte trovate.
@@ -21,8 +23,13 @@ final class MonitoringEngine {
         location: CLLocation,
         radiusKm: Double,
         supermarkets: [Supermarket]? = nil,
+        city: String? = nil,
         sendNotifications: Bool = true
     ) async -> Int {
+        // Senza una sorgente dati configurata non ci sono offerte da controllare
+        // (mai dati inventati).
+        guard let provider = fixedProvider ?? OfferProviderFactory.makeProvider() else { return 0 }
+
         let context = ModelContext(container)
 
         // 1. Prodotti monitorati attivi.
@@ -43,7 +50,8 @@ final class MonitoringEngine {
         let chains = Array(Set(nearby.map(\.chain)))
         guard let dtos = try? await provider.fetchOffers(
             products: products.map(\.displayName),
-            chains: chains
+            chains: chains,
+            city: city
         ) else { return 0 }
 
         // 4. Aggiorna il database e individua le offerte mai viste prima.
