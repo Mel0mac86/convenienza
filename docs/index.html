@@ -157,6 +157,7 @@ svg.chart { width: 100%; height: 190px; }
   <div id="view-home" class="view active"></div>
   <div id="view-cerca" class="view"></div>
   <div id="view-offerte" class="view"></div>
+  <div id="view-volantini" class="view"></div>
   <div id="view-profilo" class="view"></div>
 </main>
 
@@ -167,6 +168,7 @@ svg.chart { width: 100%; height: 190px; }
   <button data-tab="home" class="on"><span class="i">🏠</span>Home</button>
   <button data-tab="cerca"><span class="i">🔍</span>Cerca</button>
   <button data-tab="offerte"><span class="i">🏷️</span>Offerte</button>
+  <button data-tab="volantini"><span class="i">📰</span>Volantini</button>
   <button data-tab="profilo"><span class="i">👤</span>Profilo</button>
 </nav>
 
@@ -261,10 +263,11 @@ const S = {
   pos: store.get("pos", null),              // {lat, lon}
   city: store.get("city", null),
   lastCheck: store.get("lastCheck", null),
+  status: store.get("status", null),        // {code, msg, at} esito ultimo controllo offerte
   filter: { maxKm: null, chains: [], cats: [], minDisc: 0, maxPrice: null, sort: "sconto" },
   tab: "home", checking: false, locDenied: false,
 };
-const persist = () => { for (const k of ["products","offers","history","markets","radius","groqKey","pos","city","lastCheck"]) store.set(k, S[k]); };
+const persist = () => { for (const k of ["products","offers","history","markets","radius","groqKey","pos","city","lastCheck","status"]) store.set(k, S[k]); };
 const activeOffers = () => S.offers.filter((o) => new Date(o.endsAt) > new Date());
 
 /* ============================ Posizione ============================ */
@@ -347,8 +350,14 @@ async function groqBatch(products, chains) {
     await new Promise((res) => setTimeout(res, wait * 1000));
     r = await call(); j = await r.json().catch(() => ({}));
   }
+  if (r.status === 429 || j?.error?.code === "rate_limit_exceeded") {
+    const e = new Error("Limite del piano gratuito Groq raggiunto"); e.code = "rate"; throw e;
+  }
+  if (r.status === 401 || r.status === 403) {
+    const e = new Error("Chiave API Groq non valida: controlla nel Profilo"); e.code = "auth"; throw e;
+  }
   const content = j?.choices?.[0]?.message?.content;
-  if (!content) throw new Error(j?.error?.message || "Risposta non valida");
+  if (!content) throw new Error(j?.error?.message || "Risposta non valida da Groq");
   try { localStorage.setItem(cacheKey, JSON.stringify({ at: Date.now(), content })); } catch {}
   return content;
 }
@@ -379,18 +388,22 @@ function parseOffers(content, requested) {
   }).filter(Boolean);
 }
 
+const setStatus = (code, msg) => { S.status = { code, msg, at: new Date().toISOString() }; persist(); };
+
 async function checkOffers() {
-  if (!S.groqKey || !S.products.length || !S.markets.length) return 0;
+  if (!S.groqKey) { setStatus("no_key", "Chiave API Groq non configurata: inseriscila nel Profilo."); return 0; }
+  if (!S.products.length) { setStatus("no_products", "Nessun prodotto monitorato: aggiungine uno dalla scheda Cerca."); return 0; }
+  if (!S.markets.length) { setStatus("no_markets", "Nessun supermercato rilevato in zona: consenti la posizione o aumenta il raggio."); return 0; }
   const chains = [...new Set(S.markets.map((m) => m.chain).filter(Boolean))];
-  if (!chains.length) return 0;
+  if (!chains.length) { setStatus("no_chains", "Nessuna catena nota tra i supermercati in zona."); return 0; }
   const { year, week } = isoWeek();
-  let fresh = 0;
+  let fresh = 0, failure = null;
   const names = S.products.map((p) => p.name);
   for (let i = 0; i < names.length; i += 3) {
     const batch = names.slice(i, i + 3);
     let content;
     try { content = await groqBatch(batch, chains); }
-    catch { break; }
+    catch (e) { failure = e; break; }
     for (const o of parseOffers(content, batch)) {
       const norm = normalize(o.q);
       const key = `${norm}|${o.chain}|${year}-W${week}`;
@@ -411,6 +424,16 @@ async function checkOffers() {
   // pulizia offerte scadute da oltre 30 giorni
   const cutoff = Date.now() - 30 * 86400e3;
   S.offers = S.offers.filter((o) => new Date(o.endsAt).getTime() > cutoff);
+  if (failure) {
+    setStatus(failure.code === "rate" ? "rate" : failure.code === "auth" ? "auth" : "error",
+      failure.code === "rate" ? "Limite Groq del piano gratuito raggiunto: nuovo tentativo al prossimo aggiornamento." : failure.message);
+  } else if (fresh > 0) {
+    setStatus("ok", `Trovate ${fresh} nuove offerte.`);
+  } else if (activeOffers().length > 0) {
+    setStatus("ok", "Offerte aggiornate.");
+  } else {
+    setStatus("empty", "La ricerca nei volantini online non ha trovato riscontri per i tuoi prodotti questa settimana. Riprova più tardi o sfoglia i volantini.");
+  }
   persist();
   return fresh;
 }
@@ -485,7 +508,7 @@ const App = {
     S.tab = tab;
     document.querySelectorAll("#tabbar button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
     document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + tab));
-    $("#headTitle").textContent = { home: "Convenienza", cerca: "Cerca prodotti", offerte: "Offerte in zona", profilo: "Profilo" }[tab];
+    $("#headTitle").textContent = { home: "Convenienza", cerca: "Cerca prodotti", offerte: "Offerte in zona", volantini: "Volantini di zona", profilo: "Profilo" }[tab];
     window.scrollTo(0, 0);
     render();
   },
@@ -548,6 +571,7 @@ function renderHome() {
   else h += `<div class="card">` + S.markets.slice(0, 6).map((m) =>
     `<div class="market"><span>🏪</span><div><div style="font-weight:600;font-size:14px">${esc(m.name)}</div>${m.chain ? `<div class="muted">${esc(m.chain)}</div>` : ""}</div><span class="dist">${fmtDist(m.dist)}</span></div>`).join("") +
     (S.markets.length > 6 ? `<div class="muted" style="padding-top:8px">+ altri ${S.markets.length - 6} nel raggio di ${S.radius} km</div>` : "") + `</div>`;
+  h += `<div class="card banner" style="background:var(--green-bg)" onclick="App.setTab('volantini')"><span class="emoji">📰</span><div><b style="color:var(--green)">Sfoglia i volantini di zona</b><div class="muted">Tutte le promozioni delle catene intorno a te, pagina per pagina.</div></div></div>`;
   $("#view-home").innerHTML = h;
 }
 
@@ -594,9 +618,60 @@ function renderOfferte() {
     <div class="field"><label>Categorie</label>${CATS.map(([c, i]) => `<label class="checkline"><input type="checkbox" ${f.cats.includes(c) ? "checked" : ""} onchange="this.checked?S.filter.cats.push('${q(c)}'):(S.filter.cats=S.filter.cats.filter(x=>x!=='${q(c)}'));render()"> ${i} ${esc(c)}</label>`).join("")}</div>
     ${nf ? `<button class="btn gray full" onclick="S.filter={maxKm:null,chains:[],cats:[],minDisc:0,maxPrice:null,sort:S.filter.sort};render()">Azzera filtri</button>` : ""}
   </details>`;
-  if (!list.length) h += `<div class="card empty"><span class="e">${nf ? "⚙️" : "🏷️"}</span><b>${nf ? "Nessuna offerta con questi filtri" : "Nessuna offerta al momento"}</b><div class="muted" style="margin-top:6px">${nf ? "Prova ad allentare i filtri." : S.groqKey ? "Controlliamo i volantini della zona a ogni aggiornamento: ti avviseremo appena un tuo prodotto sarà in promozione." : "Configura la chiave Groq nel Profilo per cercare le offerte reali."}</div></div>`;
-  else h += list.map((o) => offerCard(o)).join("");
+  if (!list.length) {
+    const st = S.status;
+    const why = nf ? "Prova ad allentare i filtri."
+      : (st?.msg || "Controlliamo i volantini della zona a ogni aggiornamento: ti avviseremo appena un tuo prodotto sarà in promozione.");
+    h += `<div class="card empty"><span class="e">${nf ? "⚙️" : "🏷️"}</span><b>${nf ? "Nessuna offerta con questi filtri" : "Nessuna offerta al momento"}</b>
+      <div class="muted" style="margin-top:6px">${esc(why)}</div>
+      ${st?.at && !nf ? `<div class="muted" style="margin-top:4px;font-size:11px">Ultimo controllo: ${new Date(st.at).toLocaleString("it-IT")}</div>` : ""}
+      ${!nf ? `<button class="btn" style="margin-top:14px" onclick="App.setTab('volantini')">📰 Sfoglia i volantini di zona</button>` : ""}
+      ${st?.code === "no_key" || st?.code === "auth" ? `<button class="btn gray" style="margin-top:8px" onclick="App.setTab('profilo')">Vai al Profilo</button>` : ""}
+    </div>`;
+  } else {
+    h += list.map((o) => offerCard(o)).join("");
+  }
   $("#view-offerte").innerHTML = h;
+}
+
+/* Slug PromoQui verificati per ogni catena: pagina "sfoglia volantino". */
+const FLYER_SLUGS = {
+  "Lidl": "lidl", "Eurospin": "eurospin", "Conad": "conad", "Esselunga": "esselunga",
+  "Carrefour": "carrefour", "Coop": "coop", "MD": "md-discount", "Penny Market": "penny-market",
+  "Pam": "pam", "Famila": "famila", "Despar": "despar", "Crai": "crai", "Aldi": "aldi",
+  "Sigma": "sigma", "Tigre": "tigre", "In's Mercato": "in-s", "Bennet": "bennet",
+  "Tigros": "tigros", "Basko": "basko",
+};
+function renderVolantini() {
+  // Catene presenti in zona, con il punto vendita più vicino di ciascuna.
+  const byChain = new Map();
+  for (const m of S.markets) {
+    if (!m.chain) continue;
+    if (!byChain.has(m.chain) || m.dist < byChain.get(m.chain).dist) byChain.set(m.chain, m);
+  }
+  const chains = [...byChain.values()].sort((a, b) => a.dist - b.dist);
+  let h = `<div class="muted" style="margin:2px 0 12px">Sfoglia i volantini veri delle catene intorno a te${S.city ? " (" + esc(S.city) + ")" : ""}. Si aprono su PromoQui, che li localizza automaticamente sulla tua zona.</div>`;
+  if (!chains.length) {
+    h += `<div class="card empty"><span class="e">📰</span><b>${S.pos ? "Nessuna catena rilevata in zona" : "Posizione non ancora rilevata"}</b><div class="muted" style="margin-top:6px">${S.pos ? "Prova ad aumentare il raggio nel Profilo, oppure sfoglia tutti i volantini qui sotto." : "Premi Aggiorna in alto e consenti la posizione, oppure sfoglia tutti i volantini qui sotto."}</div></div>`;
+  } else {
+    h += chains.map((m) => {
+      const slug = FLYER_SLUGS[m.chain];
+      const url = slug ? `https://www.promoqui.it/volantini/${slug}` : null;
+      return `<a class="card offer" style="text-decoration:none;color:inherit;display:flex" href="${url || "#"}" ${url ? 'target="_blank" rel="noopener"' : ""}>
+        <div class="ico">📰</div>
+        <div class="body">
+          <div class="name">${esc(m.chain)}</div>
+          <div class="where">🏪 ${esc(m.name)} · ${fmtDist(m.dist)}</div>
+          <div class="muted" style="margin-top:3px;color:var(--green);font-weight:600">Sfoglia il volantino ›</div>
+        </div></a>`;
+    }).join("");
+  }
+  h += `<div class="section-title">🌍 Tutti i volantini</div><div class="card">
+    <a href="https://www.promoqui.it" target="_blank" rel="noopener" style="text-decoration:none"><div class="row"><span style="font-size:14px;color:var(--text)">PromoQui — volantini vicino a te</span><span class="pill ok">Apri ›</span></div></a>
+    <a href="https://www.doveconviene.it" target="_blank" rel="noopener" style="text-decoration:none"><div class="row"><span style="font-size:14px;color:var(--text)">DoveConviene — volantini e offerte</span><span class="pill ok">Apri ›</span></div></a>
+    <div class="muted" style="margin-top:8px">Consenti la posizione anche su questi siti per vedere i volantini esatti del tuo quartiere.</div>
+  </div>`;
+  $("#view-volantini").innerHTML = h;
 }
 
 function renderProfilo() {
@@ -672,7 +747,7 @@ function priceChart(hist) {
 }
 
 function render() {
-  ({ home: renderHome, cerca: renderCerca, offerte: renderOfferte, profilo: renderProfilo })[S.tab]();
+  ({ home: renderHome, cerca: renderCerca, offerte: renderOfferte, volantini: renderVolantini, profilo: renderProfilo })[S.tab]();
 }
 
 /* ============================== Avvio ============================== */
