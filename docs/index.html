@@ -127,6 +127,19 @@ main { padding: 4px 16px 24px; max-width: 560px; margin: 0 auto; }
   opacity: 0; transform: translateY(8px); transition: .25s; pointer-events: none; text-align: center;
 }
 #toast.show { opacity: 1; transform: none; }
+#toast.action { pointer-events: auto; }
+#toast button { border: 0; background: transparent; color: var(--green); font-weight: 800; font-size: 14px; margin-left: 10px; }
+#onboard {
+  position: fixed; inset: 0; z-index: 50; background: var(--bg); display: flex; flex-direction: column;
+  justify-content: center; padding: 32px 28px calc(32px + env(safe-area-inset-bottom));
+}
+#onboard .step { display: flex; gap: 14px; align-items: flex-start; margin: 14px 0; }
+#onboard .step .e { font-size: 30px; }
+#onboard .step b { font-size: 16px; }
+#onboard .step div div { color: var(--text2); font-size: 14px; margin-top: 2px; line-height: 1.45; }
+.bought .name, .bought span { text-decoration: line-through; opacity: .55; }
+.buy { border: 0; background: var(--card2); border-radius: 10px; width: 34px; height: 34px; font-size: 17px; }
+.buy.on { background: var(--green-bg); }
 #detail {
   position: fixed; inset: 0; z-index: 40; background: var(--bg); overflow-y: auto;
   padding: calc(14px + env(safe-area-inset-top)) 16px 40px; display: none;
@@ -163,6 +176,14 @@ svg.chart { width: 100%; height: 190px; }
 
 <div id="detail"></div>
 <div id="toast"></div>
+<div id="onboard" style="display:none">
+  <div style="text-align:center;margin-bottom:18px"><span style="font-size:56px">🛒</span>
+    <h2 style="font-size:26px;font-weight:800;margin-top:8px">Benvenuto in Convenienza</h2></div>
+  <div class="step"><span class="e">🔍</span><div><b>Cerca i prodotti che compri</b><div>Li salviamo nella tua lista e li teniamo d'occhio per te.</div></div></div>
+  <div class="step"><span class="e">📍</span><div><b>Consenti la posizione</b><div>Serve solo a trovare i supermercati fisici vicino a te. Nessun e-commerce.</div></div></div>
+  <div class="step"><span class="e">🏷️</span><div><b>Scopri quando conviene</b><div>Offerte reali dai volantini della zona, confronto prezzi e volantini sfogliabili.</div></div></div>
+  <button class="btn full" style="margin-top:22px" onclick="App.finishOnboarding()">Inizia</button>
+</div>
 
 <nav id="tabbar">
   <button data-tab="home" class="on"><span class="i">🏠</span>Home</button>
@@ -264,10 +285,11 @@ const S = {
   city: store.get("city", null),
   lastCheck: store.get("lastCheck", null),
   status: store.get("status", null),        // {code, msg, at} esito ultimo controllo offerte
+  staticOffers: store.get("staticOffers", null), // offerte condivise dal job notturno (docs/data/offers.json)
   filter: { maxKm: null, chains: [], cats: [], minDisc: 0, maxPrice: null, sort: "sconto" },
   tab: "home", checking: false, locDenied: false,
 };
-const persist = () => { for (const k of ["products","offers","history","markets","radius","groqKey","pos","city","lastCheck","status"]) store.set(k, S[k]); };
+const persist = () => { for (const k of ["products","offers","history","markets","radius","groqKey","pos","city","lastCheck","status","staticOffers"]) store.set(k, S[k]); };
 const activeOffers = () => S.offers.filter((o) => new Date(o.endsAt) > new Date());
 
 /* ============================ Posizione ============================ */
@@ -388,6 +410,62 @@ function parseOffers(content, requested) {
   }).filter(Boolean);
 }
 
+/* ============ Offerte condivise (aggiornate ogni notte dal repository) ============ */
+async function loadStaticOffers() {
+  try {
+    const r = await fetch("data/offers.json?t=" + Math.floor(Date.now() / 600000));
+    if (!r.ok) return;
+    const data = await r.json();
+    if (data?.offers) { S.staticOffers = data; persist(); }
+  } catch {}
+}
+
+/// Integra le offerte condivise che riguardano i prodotti monitorati e le catene in zona.
+function applyStaticOffers() {
+  const data = S.staticOffers;
+  if (!data?.offers?.length || !S.markets.length) return 0;
+  const { year, week } = isoWeek();
+  let fresh = 0;
+  for (const o of data.offers) {
+    if (new Date(o.endsAt) <= new Date()) continue;
+    const branch = S.markets.filter((m) => m.chain === o.chain).sort((a, b) => a.dist - b.dist)[0];
+    if (!branch) continue;
+    const offNorm = normalize(o.product);
+    const prod = S.products.find((p) => productMatches(p.norm, offNorm));
+    if (!prod) continue;
+    const key = `${prod.norm}|${o.chain}|${year}-W${week}`;
+    const existing = S.offers.find((x) => x.key === key);
+    if (existing) {
+      Object.assign(existing, { market: branch.name, lat: branch.lat, lon: branch.lon });
+      continue;
+    }
+    S.offers.push({ key, norm: prod.norm, label: o.label, chain: o.chain, market: branch.name,
+      lat: branch.lat, lon: branch.lon, price: o.price, prev: o.prev,
+      startsAt: o.startsAt, endsAt: o.endsAt, notified: false });
+    if (o.prev) S.history.push({ norm: prod.norm, chain: o.chain, price: o.prev, promo: false, at: o.startsAt });
+    S.history.push({ norm: prod.norm, chain: o.chain, price: o.price, promo: true, at: new Date().toISOString() });
+    fresh++;
+  }
+  persist();
+  return fresh;
+}
+
+/// Offerte condivise per catene in zona che NON riguardano prodotti già monitorati.
+function popularOffers() {
+  const data = S.staticOffers;
+  if (!data?.offers) return [];
+  const out = [];
+  for (const o of data.offers) {
+    if (new Date(o.endsAt) <= new Date()) continue;
+    const branch = S.markets.filter((m) => m.chain === o.chain).sort((a, b) => a.dist - b.dist)[0];
+    if (!branch) continue;
+    if (S.products.some((p) => productMatches(p.norm, normalize(o.product)))) continue;
+    out.push({ ...o, market: branch.name, lat: branch.lat, lon: branch.lon, dist: branch.dist });
+  }
+  return out.sort((a, b) =>
+    (b.prev ? (b.prev - b.price) / b.prev : 0) - (a.prev ? (a.prev - a.price) / a.prev : 0));
+}
+
 const setStatus = (code, msg) => { S.status = { code, msg, at: new Date().toISOString() }; persist(); };
 
 async function checkOffers() {
@@ -398,7 +476,11 @@ async function checkOffers() {
   if (!chains.length) { setStatus("no_chains", "Nessuna catena nota tra i supermercati in zona."); return 0; }
   const { year, week } = isoWeek();
   let fresh = 0, failure = null;
-  const names = S.products.map((p) => p.name);
+  // Per risparmiare il piano gratuito, interroga Groq solo per i prodotti
+  // che non hanno già un'offerta attiva (da Groq o dalle offerte condivise).
+  const covered = new Set(activeOffers().map((o) => o.norm));
+  const names = S.products.filter((p) => !covered.has(p.norm)).map((p) => p.name);
+  if (!names.length) { setStatus("ok", "Offerte aggiornate."); return 0; }
   for (let i = 0; i < names.length; i += 3) {
     const batch = names.slice(i, i + 3);
     let content;
@@ -469,12 +551,13 @@ const App = {
     try {
       await locate();
       if (S.pos) {
-        await Promise.all([reverseCity(), findMarkets()]);
-        const fresh = await checkOffers();
+        await Promise.all([reverseCity(), findMarkets(), loadStaticOffers()]);
+        const freshStatic = applyStaticOffers();
+        const fresh = freshStatic + await checkOffers();
         S.lastCheck = new Date().toISOString();
         persist();
         if (fresh > 0) await notifyNew();
-        else if (manual) toast(S.groqKey ? "Nessuna nuova offerta al momento" : "Configura la chiave Groq nel Profilo");
+        else if (manual) toast(S.status?.msg || "Nessuna nuova offerta al momento");
       } else if (manual) {
         toast("Posizione non disponibile: consenti l'accesso in Safari");
       }
@@ -500,9 +583,24 @@ const App = {
     if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
   },
   removeProduct(norm) {
+    const product = S.products.find((p) => p.norm === norm);
+    const offers = S.offers.filter((o) => o.norm === norm);
     S.products = S.products.filter((p) => p.norm !== norm);
     S.offers = S.offers.filter((o) => o.norm !== norm);
     persist(); render();
+    if (product) toast(`"${product.name}" eliminato`, { label: "Annulla", fn: () => {
+      S.products.unshift(product); S.offers.push(...offers); persist(); render();
+    }});
+  },
+  toggleBought(norm) {
+    const p = S.products.find((x) => x.norm === norm);
+    if (p) { p.bought = !p.bought; persist(); render(); }
+  },
+  finishOnboarding() {
+    store.set("onboarded", true);
+    $("#onboard").style.display = "none";
+    App.refreshAll(false);
+    if ("Notification" in window && Notification.permission === "default") Notification.requestPermission().catch(() => {});
   },
   setTab(tab) {
     S.tab = tab;
@@ -528,21 +626,65 @@ const App = {
 };
 
 /* ============================== Render ============================== */
-function toast(msg) {
+function toast(msg, action) {
   const t = $("#toast");
-  t.textContent = msg; t.classList.add("show");
-  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 3200);
+  t.innerHTML = esc(msg) + (action ? `<button id="toastBtn">${esc(action.label)}</button>` : "");
+  t.classList.toggle("action", !!action);
+  if (action) $("#toastBtn").onclick = () => { t.classList.remove("show"); action.fn(); };
+  t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), action ? 6000 : 3200);
+}
+
+/* Sinonimi per il matching prodotto ↔ offerta (es. "passata" trova "polpa di pomodoro"). */
+const SYN = [
+  ["passata", "passata di pomodoro", "polpa di pomodoro", "pelati", "passata mutti"],
+  ["caffe", "caffe macinato", "caffe lavazza", "caffe illy", "caffe espresso"],
+  ["olio extravergine", "olio evo", "olio extravergine di oliva", "olio di oliva"],
+  ["latte", "latte parzialmente scremato", "latte intero", "latte fresco"],
+  ["tonno", "tonno in scatola", "tonno rio mare", "tonno all'olio"],
+  ["acqua", "acqua naturale", "acqua minerale", "acqua frizzante"],
+  ["pasta", "pasta barilla", "pasta de cecco", "spaghetti", "penne", "fusilli"],
+  ["biscotti", "frollini", "biscotti mulino bianco"],
+  ["uova", "uova fresche"],
+  ["pollo", "petto di pollo", "fusi di pollo"],
+  ["birra", "birra moretti", "birra ichnusa", "birra peroni"],
+  ["riso", "riso scotti", "riso carnaroli", "riso arborio"],
+  ["merendine", "merendine kinder", "kinder"],
+  ["cereali", "cereali kellogg's", "corn flakes"],
+  ["detersivo lavatrice", "detersivo dash", "detersivo lavatrice dash"],
+  ["gelato", "gelato algida"],
+  ["patatine", "patatine san carlo", "chips"],
+  ["succo", "succo di frutta", "spremuta"],
+];
+const synGroup = (norm) => SYN.find((g) => g.some((k) => norm === k || norm.includes(k)));
+function productMatches(userNorm, offerNorm) {
+  if (userNorm === offerNorm || offerNorm.includes(userNorm) || userNorm.includes(offerNorm)) return true;
+  const a = synGroup(userNorm);
+  return !!(a && a === synGroup(offerNorm));
+}
+
+/* Prezzo al kg/litro stimato dal formato indicato nel nome (es. "250 g", "1,5 l"). */
+function unitPrice(label, price) {
+  const m = /(\d+(?:[.,]\d+)?)\s?(kg|g|gr|l|lt|ml|cl)\b/i.exec(label || "");
+  if (!m) return null;
+  let qty = parseFloat(m[1].replace(",", "."));
+  const u = m[2].toLowerCase();
+  if (u === "g" || u === "gr" || u === "ml") qty /= 1000;
+  else if (u === "cl") qty /= 100;
+  if (!(qty > 0) || qty > 50) return null;
+  const unit = ["l", "lt", "ml", "cl"].includes(u) ? "L" : "kg";
+  return eur(price / qty) + "/" + unit;
 }
 const offerDisc = (o) => o.prev ? Math.round((o.prev - o.price) / o.prev * 100) : null;
 const offerDist = (o) => S.pos ? haversine(S.pos, { lat: o.lat, lon: o.lon }) : null;
 
 function offerCard(o, big) {
-  const disc = offerDisc(o), dist = offerDist(o);
+  const disc = offerDisc(o), dist = offerDist(o), up = unitPrice(o.label, o.price);
   return `<div class="card offer" onclick="App.openDetail('${q(o.norm)}')">
     <div class="ico">${catIcon(guessCat(o.label).cat)}</div>
     <div class="body">
       <div class="name">${esc(o.label)}</div>
-      <div class="priceline"><span class="price">${eur(o.price)}</span>${o.prev ? `<span class="oldprice">${eur(o.prev)}</span>` : ""}${disc ? `<span class="disc">-${disc}%</span>` : ""}</div>
+      <div class="priceline"><span class="price">${eur(o.price)}</span>${o.prev ? `<span class="oldprice">${eur(o.prev)}</span>` : ""}${disc ? `<span class="disc">-${disc}%</span>` : ""}${up ? `<span class="muted" style="font-size:11px">${up}</span>` : ""}</div>
       <div class="where">${esc(o.market)}${dist != null ? " · " + fmtDist(dist) : ""}</div>
       <div class="expiry ${isSoon(o.endsAt) ? "soon" : ""}">${fmtExpiry(o.endsAt)}</div>
     </div></div>`;
@@ -579,8 +721,12 @@ function renderCerca() {
   const sugg = ["Pasta", "Latte", "Caffè", "Olio extravergine", "Tonno", "Nutella", "Acqua naturale", "Detersivo piatti", "Biscotti", "Coca Cola"];
   let h = `<div class="searchbox"><input id="searchInput" type="search" placeholder="Es. passata di pomodoro" enterkeyhint="done"><button class="btn" onclick="App.addProduct($('#searchInput').value)">Monitora</button></div>`;
   if (S.products.length) {
-    h += `<div class="section-title">👀 Ricerche monitorate</div><div class="card">` +
-      S.products.map((p) => `<div class="prod"><span>${p.icon}</span><div><div style="font-weight:600;font-size:15px">${esc(p.name)}</div><div class="muted">${esc(p.cat)}</div></div><button class="del" onclick="event.stopPropagation();App.removeProduct('${q(p.norm)}')">Elimina</button></div>`).join("") + `</div>`;
+    const sorted = [...S.products].sort((a, b) => (a.bought ? 1 : 0) - (b.bought ? 1 : 0));
+    h += `<div class="section-title">👀 Ricerche monitorate</div><div class="muted" style="margin:-6px 0 8px">Tocca 🛒 quando l'hai comprato.</div><div class="card">` +
+      sorted.map((p) => `<div class="prod ${p.bought ? "bought" : ""}">
+        <button class="buy ${p.bought ? "on" : ""}" onclick="App.toggleBought('${q(p.norm)}')">${p.bought ? "✓" : "🛒"}</button>
+        <span>${p.icon}</span><div><div class="name" style="font-weight:600;font-size:15px">${esc(p.name)}</div><div class="muted">${esc(p.cat)}</div></div>
+        <button class="del" onclick="event.stopPropagation();App.removeProduct('${q(p.norm)}')">Elimina</button></div>`).join("") + `</div>`;
   }
   h += `<div class="section-title">💡 Prova a monitorare</div><div class="chips">` +
     sugg.filter((s) => !S.products.some((p) => p.norm === normalize(s))).map((s) => `<button class="chip" onclick="App.addProduct('${q(s)}')">+ ${esc(s)}</button>`).join("") + `</div>`;
@@ -630,6 +776,26 @@ function renderOfferte() {
     </div>`;
   } else {
     h += list.map((o) => offerCard(o)).join("");
+  }
+  // Offerte dai volantini della settimana per prodotti NON ancora monitorati (fonte condivisa).
+  const pop = popularOffers();
+  if (pop.length && !nf) {
+    h += `<div class="section-title">🔥 In offerta vicino a te</div><div class="muted" style="margin:-6px 0 10px">Dai volantini di questa settimana. Tocca ＋ per iniziare a monitorare.</div>`;
+    h += pop.slice(0, 15).map((o) => {
+      const disc = o.prev ? Math.round((o.prev - o.price) / o.prev * 100) : null;
+      const up = unitPrice(o.label, o.price);
+      return `<div class="card offer">
+        <div class="ico">${catIcon(guessCat(o.label).cat)}</div>
+        <div class="body">
+          <div class="name">${esc(o.label)}</div>
+          <div class="priceline"><span class="price">${eur(o.price)}</span>${o.prev ? `<span class="oldprice">${eur(o.prev)}</span>` : ""}${disc ? `<span class="disc">-${disc}%</span>` : ""}${up ? `<span class="muted" style="font-size:11px">${up}</span>` : ""}</div>
+          <div class="where">${esc(o.market)} · ${fmtDist(o.dist)}</div>
+          <div class="expiry ${isSoon(o.endsAt) ? "soon" : ""}">${fmtExpiry(o.endsAt)}</div>
+        </div>
+        <button class="buy" style="align-self:center" onclick="App.addProduct('${q(o.product)}')">＋</button>
+      </div>`;
+    }).join("");
+    if (S.staticOffers?.updatedAt) h += `<div class="muted" style="font-size:11px;text-align:center;margin-top:4px">Volantini analizzati il ${new Date(S.staticOffers.updatedAt).toLocaleDateString("it-IT")}</div>`;
   }
   $("#view-offerte").innerHTML = h;
 }
@@ -754,7 +920,11 @@ function render() {
 document.querySelectorAll("#tabbar button").forEach((b) => b.addEventListener("click", () => App.setTab(b.dataset.tab)));
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 render();
-App.refreshAll(false);
+if (!store.get("onboarded", false)) {
+  $("#onboard").style.display = "flex"; // il primo refresh parte da "Inizia"
+} else {
+  App.refreshAll(false);
+}
 setInterval(() => App.refreshAll(false), 30 * 60 * 1000); // controllo periodico mentre l'app è aperta
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && S.lastCheck && Date.now() - new Date(S.lastCheck) > 30 * 60 * 1000) App.refreshAll(false);

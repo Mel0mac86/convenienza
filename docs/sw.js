@@ -1,6 +1,6 @@
 // Service worker minimale: cache dell'app shell per l'avvio offline.
 // Le chiamate API (Groq, Overpass, Nominatim) passano sempre dalla rete.
-const CACHE = "convenienza-v2";
+const CACHE = "convenienza-v3";
 const SHELL = ["./", "./index.html", "./manifest.webmanifest", "./icon-180.png", "./icon-512.png"];
 
 self.addEventListener("install", (event) => {

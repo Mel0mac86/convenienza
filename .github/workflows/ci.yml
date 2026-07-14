@@ -1,0 +1,55 @@
+# CI: verifica la web app (sintassi + smoke test) su Linux e compila
+# l'app iOS nativa su macOS (runner gratuiti per i repository pubblici).
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request: {}
+  workflow_dispatch: {}
+
+jobs:
+  pwa:
+    name: Web app
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Sintassi JS della PWA e del service worker
+        run: |
+          node -e "
+            const fs = require('fs');
+            const html = fs.readFileSync('docs/index.html', 'utf8');
+            const m = html.match(/<script>([\s\S]*)<\/script>/);
+            fs.writeFileSync('/tmp/app.js', m[1]);
+          "
+          node --check /tmp/app.js
+          node --check docs/sw.js
+          node --check scripts/update-offers.mjs
+      - name: Manifest valido
+        run: node -e "JSON.parse(require('fs').readFileSync('docs/manifest.webmanifest'))"
+      - name: offers.json valido (se presente)
+        run: |
+          if [ -f docs/data/offers.json ]; then
+            node -e "const d=JSON.parse(require('fs').readFileSync('docs/data/offers.json')); console.log(d.week, d.offers.length + ' offerte')"
+          fi
+
+  ios:
+    name: App iOS
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Installa XcodeGen
+        run: brew install xcodegen
+      - name: Genera il progetto Xcode
+        run: xcodegen generate
+      - name: Compila per il simulatore (senza firma)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Convenienza.xcodeproj \
+            -scheme Convenienza \
+            -destination "generic/platform=iOS Simulator" \
+            CODE_SIGNING_ALLOWED=NO

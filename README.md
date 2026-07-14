@@ -93,6 +93,22 @@ di push, quindi il controllo offerte avviene all'apertura dell'app (e ogni 30
 minuti mentre è aperta), con avvisi in-app. Le notifiche push vere restano una
 funzionalità dell'app nativa.
 
+### Offerte condivise (gratis, via GitHub Actions)
+
+Il workflow `.github/workflows/update-offers.yml` gira **ogni notte** sui runner
+gratuiti di GitHub: cerca nei volantini le offerte di ~40 prodotti popolari
+presso 12 catene nazionali e committa `docs/data/offers.json`. La web app legge
+quel file, quindi **le offerte compaiono per tutti senza chiave API personale**;
+la chiave inserita nel Profilo serve solo per i prodotti fuori dal paniere.
+
+Per attivarlo servono due cose (una tantum):
+1. il workflow deve stare sul **branch di default** (`main`) — i cron di GitHub
+   girano solo lì;
+2. il secret **`GROQ_API_KEY`** in *Settings → Secrets and variables → Actions*.
+
+Il workflow `ci.yml` inoltre valida la web app e compila l'app iOS su runner
+macOS a ogni push.
+
 ## Requisiti e build (app nativa)
 
 - Xcode 15+ (iOS 17 SDK)
