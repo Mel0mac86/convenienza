@@ -1,0 +1,35 @@
+name: Convenienza
+options:
+  bundleIdPrefix: it.convenienza
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MARKETING_VERSION: "1.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "1"
+
+targets:
+  Convenienza:
+    type: application
+    platform: iOS
+    sources:
+      - Convenienza
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: it.convenienza.app
+        CODE_SIGN_STYLE: Automatic
+    info:
+      path: Convenienza/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Convenienza
+        UILaunchScreen: {}
+        NSLocationWhenInUseUsageDescription: "Convenienza usa la tua posizione per trovare i supermercati vicini e mostrarti le offerte della tua zona."
+        NSLocationAlwaysAndWhenInUseUsageDescription: "Con l'accesso continuo alla posizione, Convenienza aggiorna le offerte automaticamente quando cambi città, anche in background."
+        UIBackgroundModes: [fetch, processing]
+        BGTaskSchedulerPermittedIdentifiers: [it.convenienza.app.refresh]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        ITSAppUsesNonExemptEncryption: false

@@ -1,0 +1,47 @@
+# Aggiornamento notturno delle offerte: cerca i volantini reali via Groq e
+# committa docs/data/offers.json. La web app legge quel file: le offerte
+# compaiono per tutti gli utenti senza bisogno di una chiave API personale.
+#
+# Richiede il secret GROQ_API_KEY (Settings → Secrets and variables → Actions).
+# Se il secret manca, il job termina senza errori e senza modifiche.
+name: Aggiorna offerte
+
+on:
+  schedule:
+    - cron: "30 4 * * *"   # ogni notte alle 4:30 UTC (6:30 in Italia d'estate)
+  workflow_dispatch: {}     # avviabile anche a mano dalla tab Actions
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-offers
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Cerca le offerte nei volantini
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: node scripts/update-offers.mjs
+
+      - name: Committa il risultato
+        run: |
+          git config user.name "convenienza-bot"
+          git config user.email "actions@github.com"
+          git add docs/data/offers.json
+          if git diff --cached --quiet; then
+            echo "Nessuna modifica."
+          else
+            git commit -m "Aggiorna offerte del $(date -u +%Y-%m-%d)"
+            git push
+          fi
